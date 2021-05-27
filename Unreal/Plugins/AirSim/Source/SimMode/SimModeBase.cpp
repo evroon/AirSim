@@ -352,6 +352,8 @@ void ASimModeBase::Tick(float DeltaSeconds)
 
     drawDistanceSensorDebugPoints();
 
+    getFOE();
+
     Super::Tick(DeltaSeconds);
 }
 
@@ -870,4 +872,142 @@ void ASimModeBase::drawDistanceSensorDebugPoints()
             }
         }
     }
+}
+
+std::string ASimModeBase::GetTimeFormatted()
+{
+    const auto p1 = std::chrono::system_clock::now();
+
+    return std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            p1.time_since_epoch())
+            .count());
+}
+
+FString ASimModeBase::GetBaseDir()
+{
+    return TEXT("C:\\Users\\Daniel\\Documents\\uni\\thesis\\optical-flow-mav-detection\\data\\states\\");
+}
+
+bool ASimModeBase::FileSaveString(FString TextToSave, FString FileName)
+{
+    return FFileHelper::SaveStringToFile(TextToSave, *(GetBaseDir() + FileName));
+}
+
+FVector2D ASimModeBase::ProjectWorldToScreenCorrected(APlayerController const* Player, const FVector& WorldPosition, bool bPlayerViewportRelative)
+{
+    ULocalPlayer* const LP = Player ? Player->GetLocalPlayer() : nullptr;
+    FVector2D ScreenPosition;
+
+    if (LP && LP->ViewportClient) {
+        FSceneViewProjectionData ProjectionData;
+        if (LP->GetProjectionData(LP->ViewportClient->Viewport, eSSP_FULL, ProjectionData)) {
+            ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
+            ViewRect = ProjectionData.GetConstrainedViewRect();
+            bool bResult = FSceneView::ProjectWorldToScreen(WorldPosition, ViewRect, ViewProjectionMatrix, ScreenPosition);
+
+            if (bPlayerViewportRelative)
+                ScreenPosition -= FVector2D(ProjectionData.GetConstrainedViewRect().Min);
+
+            return ScreenPosition;
+        }
+    }
+
+    return FVector2D::ZeroVector;
+}
+
+FVector2D ASimModeBase::ProjectScreenToWorld(APlayerController const* Player, const FVector2D& ScreenPosition)
+{
+    ULocalPlayer* const LP = Player ? Player->GetLocalPlayer() : nullptr;
+
+    if (LP && LP->ViewportClient) {
+        FSceneViewProjectionData ProjectionData;
+        if (LP->GetProjectionData(LP->ViewportClient->Viewport, eSSP_FULL, ProjectionData)) {
+            ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
+            FMatrix ViewMatrix = ProjectionData.ViewRotationMatrix;
+            FMatrix ProjectionMatrix = ProjectionData.ProjectionMatrix;
+            ViewRect = ProjectionData.GetConstrainedViewRect();
+            FMatrix InvViewProjectionMatrix = ViewProjectionMatrix.Inverse();
+
+            FVector WorldOrigin, WorldDirection;
+            FSceneView::DeprojectScreenToWorld(ScreenPosition, ViewRect, InvViewProjectionMatrix, WorldOrigin, WorldDirection);
+
+            return ScreenPosition;
+        }
+    }
+
+    return FVector2D::ZeroVector;
+}
+
+FString ASimModeBase::VecToString(const msr::airlib::Vector3r& Vec)
+{
+    return "\"X\": " + FString::SanitizeFloat(Vec.x()) + ", \"Y\": " + FString::SanitizeFloat(Vec.y()) + ", \"Z\": " + FString::SanitizeFloat(Vec.z());
+}
+
+FString ASimModeBase::VecToString(const FVector2D& Vec) const
+{
+    return "\"X\": " + FString::SanitizeFloat(Vec.X) + ", \"Y\": " + FString::SanitizeFloat(Vec.Y);
+}
+
+void ASimModeBase::getFOE()
+{
+    if (getApiProvider() == nullptr)
+        return;
+
+    FString OutputString = "{\n";
+    std::string OutputPath = GetTimeFormatted() + ".json";
+    int index = 0;
+    auto apis = getApiProvider()->getVehicleSimApis();
+
+    for (auto& sim_api : apis) {
+        PawnSimApi* pawn_sim_api = static_cast<PawnSimApi*>(sim_api);
+        std::string vehicle_name = pawn_sim_api->getVehicleName();
+
+        msr::airlib::VehicleApiBase* api = getApiProvider()->getVehicleApi(vehicle_name);
+
+        if (api != nullptr) {
+            const msr::airlib::Kinematics::State* Kinematics = pawn_sim_api->getGroundTruthKinematics();
+            Vector3r linearAcc = Kinematics->accelerations.linear;
+            Vector3r linearVelo = Kinematics->twist.linear;
+            Vector3r angularAcc = Kinematics->accelerations.angular;
+            Vector3r position = Kinematics->pose.position;
+            APawn* Pawn = pawn_sim_api->getPawn();
+            FVector OldPawnLocation = FVector();
+
+            if (OldPawnLocations.count(vehicle_name) > 0) {
+                OldPawnLocation = OldPawnLocations[vehicle_name];
+            }
+
+            FVector Location = Pawn->GetActorLocation();
+            FVector Velocity = 100.0f * (Location - OldPawnLocation);
+            FVector FoEWorldSpace = Velocity + Location;
+            APlayerController* Controller = UGameplayStatics::GetPlayerController(Pawn->GetWorld(), 0);
+            FVector2D FoE = ProjectWorldToScreenCorrected(Controller, FoEWorldSpace);
+            FString VehicleName = UTF8_TO_TCHAR(vehicle_name.c_str());
+            UGameUserSettings* MyGameSettings = GEngine->GetGameUserSettings();
+            auto res = MyGameSettings->GetScreenResolution();
+            FVector2D FoERelative = FoE / res;
+
+            OutputString += "    \"" + VehicleName + "\":\n";
+            OutputString += "    {\n";
+            OutputString += "        \"FoE\": { " + VecToString(FoERelative) + " },\n";
+            OutputString += "        \"position\": { " + VecToString(position) + " },\n";
+            OutputString += "        \"linearVelocity\": { " + VecToString(linearVelo) + " },\n";
+            OutputString += "        \"linearAcc\": { " + VecToString(linearAcc) + " },\n";
+            OutputString += "        \"angularAcc\": { " + VecToString(angularAcc) + " },\n";
+            OutputString += "        \"viewProjectionMatrix\": \"" + ViewProjectionMatrix.ToString() + "\",\n";
+            OutputString += "        \"ViewRect\": \"" + ViewRect.ToString() + "\"\n";
+
+            if (index != apis.valsSize() - 1)
+                OutputString += "    },\n";
+            else
+                OutputString += "    }\n";
+
+            OldPawnLocations[vehicle_name] = Location;
+            index++;
+        }
+    }
+
+    OutputString += "}\n";
+    FileSaveString(OutputString, UTF8_TO_TCHAR(OutputPath.c_str()));
 }

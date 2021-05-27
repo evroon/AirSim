@@ -191,4 +191,18 @@ private:
     void showClockStats();
     void drawLidarDebugPoints();
     void drawDistanceSensorDebugPoints();
+
+    std::string GetTimeFormatted();
+    FString GetBaseDir();
+    bool FileSaveString(FString TextToSave, FString FileName);
+    FVector2D ProjectWorldToScreenCorrected(APlayerController const* Player, const FVector& WorldPosition, bool bPlayerViewportRelative = false);
+    FVector2D ProjectScreenToWorld(APlayerController const* Player, const FVector2D& WorldPosition);
+    void getFOE();
+
+    std::map<std::string, FVector> OldPawnLocations;
+    FMatrix ViewProjectionMatrix;
+    FIntRect ViewRect;
+
+    FString VecToString(const msr::airlib::Vector3r& Vec);
+    FString VecToString(const FVector2D& Vec) const;
 };
