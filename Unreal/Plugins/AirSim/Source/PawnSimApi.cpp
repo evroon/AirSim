@@ -3,6 +3,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "Camera/CameraComponent.h"
+#include "Components/LineBatchComponent.h"
 
 #include "AirBlueprintLib.h"
 #include "common/ClockFactory.hpp"
@@ -287,6 +288,147 @@ int PawnSimApi::getCameraCount()
     return cameras_.valsSize();
 }
 
+bool PawnSimApi::testLineOfSightToPoint(const msr::airlib::GeoPoint& lla) const
+{
+    bool hit;
+
+    // We need to run this code on the main game thread, since it iterates over actors
+    FGraphEventRef task = FFunctionGraphTask::CreateAndDispatchWhenReady([&]() {
+        // This default NedTransform is part of how we anchor the AirSim primary LLA origin at 0, 0, 0 in Unreal
+        NedTransform zero_based_ned_transform(FTransform::Identity, UAirBlueprintLib::GetWorldToMetersScale(params_.pawn));
+        FCollisionQueryParams collision_params(SCENE_QUERY_STAT(LineOfSight), true, params_.pawn);
+
+        // Transform from LLA to NED
+        const auto& settings = AirSimSettings::singleton();
+        Vector3r ned = msr::airlib::EarthUtils::GeodeticToNedFast(lla, settings.origin_geopoint.home_geo_point);
+        FVector target_location = zero_based_ned_transform.fromGlobalNed(ned);
+
+        hit = params_.pawn->GetWorld()->LineTraceTestByChannel(params_.pawn->GetActorLocation(), target_location, ECC_Visibility, collision_params);
+
+        // KM911 remove logging
+        //		common_utils::Utils::log("NED from LLA: " + std::to_string(target_location.X) + ", " + std::to_string(target_location.Y) + ", " + std::to_string(target_location.Z), common_utils::Utils::kLogLevelInfo);
+
+        if (AirSimSettings::singleton().show_los_debug_lines_) {
+            if (hit) {
+                // No LOS, so draw red line
+                FLinearColor color{ 1.0f, 0, 0, 0.4f };
+                params_.pawn->GetWorld()->LineBatcher->DrawLine(params_.pawn->GetActorLocation(), target_location, color, SDPG_World, 10, -1);
+            }
+            else {
+                // Yes LOS, so draw green line
+                FLinearColor color{ 0, 1.0f, 0, 0.4f };
+                params_.pawn->GetWorld()->LineBatcher->DrawLine(params_.pawn->GetActorLocation(), target_location, color, SDPG_World, 10, -1);
+            }
+        }
+    },
+                                                                         TStatId(),
+                                                                         NULL,
+                                                                         ENamedThreads::GameThread);
+
+    // Wait for the result
+    FTaskGraphInterface::Get().WaitUntilTaskCompletes(task);
+
+    return !hit;
+}
+
+bool PawnSimApi::testLineOfSightBetweenPoints(const msr::airlib::GeoPoint& lla1, const msr::airlib::GeoPoint& lla2) const
+{
+    bool hit;
+
+    // We need to run this code on the main game thread, since it iterates over actors
+    FGraphEventRef task = FFunctionGraphTask::CreateAndDispatchWhenReady([&]() {
+        // This default NedTransform is part of how we anchor the AirSim primary LLA origin at 0, 0, 0 in Unreal
+        NedTransform zero_based_ned_transform(FTransform::Identity, UAirBlueprintLib::GetWorldToMetersScale(params_.pawn));
+        FCollisionQueryParams collision_params(SCENE_QUERY_STAT(LineOfSight), true);
+
+        const auto& settings = AirSimSettings::singleton();
+        msr::airlib::Vector3r ned = msr::airlib::EarthUtils::GeodeticToNedFast(lla1, settings.origin_geopoint.home_geo_point);
+        FVector point1 = zero_based_ned_transform.fromGlobalNed(ned);
+        ned = msr::airlib::EarthUtils::GeodeticToNedFast(lla2, settings.origin_geopoint.home_geo_point);
+        FVector point2 = zero_based_ned_transform.fromGlobalNed(ned);
+
+        hit = params_.pawn->GetWorld()->LineTraceTestByChannel(point1, point2, ECC_Visibility, collision_params);
+
+        if (AirSimSettings::singleton().show_los_debug_lines_) {
+            FLinearColor color;
+            if (hit) {
+                // No LOS, so draw red line
+                color = FLinearColor{ 1.0f, 0, 0, 0.4f };
+            }
+            else {
+                // Yes LOS, so draw green line
+                color = FLinearColor{ 0, 1.0f, 0, 0.4f };
+            }
+
+            params_.pawn->GetWorld()->PersistentLineBatcher->DrawLine(point1, point2, color, SDPG_World, 4, 999999);
+        }
+    },
+                                                                         TStatId(),
+                                                                         NULL,
+                                                                         ENamedThreads::GameThread);
+
+    // Wait for the result
+    FTaskGraphInterface::Get().WaitUntilTaskCompletes(task);
+
+    return !hit;
+}
+
+void PawnSimApi::getWorldExtents(msr::airlib::GeoPoint& lla_min_out, msr::airlib::GeoPoint& lla_max_out) const
+{
+    // We need to run this code on the main game thread, since it iterates over actors
+    FGraphEventRef task = FFunctionGraphTask::CreateAndDispatchWhenReady([&]() {
+        // This default NedTransform is part of how we anchor the AirSim primary LLA origin at 0, 0, 0 in Unreal
+        NedTransform zero_based_ned_transform(FTransform::Identity, UAirBlueprintLib::GetWorldToMetersScale(params_.pawn));
+
+        // Testing actor enum for world bounds...
+        FVector world_min{ FLT_MAX, FLT_MAX, FLT_MAX };
+        FVector world_max{ FLT_MIN, FLT_MIN, FLT_MIN };
+        for (TActorIterator<AActor> actor_itr(params_.pawn->GetWorld()); actor_itr; ++actor_itr) {
+            // Same as with the Object Iterator, access the subclass instance with the * or -> operators.
+            AActor* actor = *actor_itr;
+            FVector origin;
+            FVector extent;
+            actor->GetActorBounds(false, origin, extent);
+            FString name = actor->GetFullName();
+            std::string stdName = std::string(TCHAR_TO_UTF8(*name));
+
+            if (extent[0] > 20000.0f) {
+                common_utils::Utils::log("In world bounds calculation, skipping gigantic object: " + stdName, common_utils::Utils::kLogLevelWarn);
+                continue;
+            }
+
+            for (int coord = 0; coord < 3; coord++) {
+                float min = origin[coord] - extent[coord];
+                float max = origin[coord] + extent[coord];
+                if (min < world_min[coord]) {
+                    world_min[coord] = min;
+                }
+                if (max > world_max[coord]) {
+                    world_max[coord] = max;
+                }
+            }
+        }
+
+        // TODO think more about how best to determine/indicate ground level, if anyone cares
+
+        // Convert Uvectors to LLAs
+        const auto& settings = AirSimSettings::singleton();
+        msr::airlib::Vector3r ned = zero_based_ned_transform.toGlobalNed(world_min);
+        lla_min_out = msr::airlib::EarthUtils::nedToGeodeticFast(ned, settings.origin_geopoint.home_geo_point);
+
+        ned = zero_based_ned_transform.toGlobalNed(world_max);
+        lla_max_out = msr::airlib::EarthUtils::nedToGeodeticFast(ned, settings.origin_geopoint.home_geo_point);
+    },
+                                                                         TStatId(),
+                                                                         NULL,
+                                                                         ENamedThreads::GameThread);
+
+    // Wait for the result
+    FTaskGraphInterface::Get().WaitUntilTaskCompletes(task);
+
+    common_utils::Utils::log("Extent min: " + lla_min_out.to_string() + ".  Max: " + lla_max_out.to_string(), common_utils::Utils::kLogLevelInfo);
+}
+
 void PawnSimApi::resetImplementation()
 {
     state_ = initial_state_;
@@ -314,6 +456,69 @@ void PawnSimApi::reportState(msr::airlib::StateReporter& reporter)
     // report actual location in unreal coordinates so we can plug that into the UE editor to move the drone.
     FVector unrealPosition = getUUPosition();
     reporter.writeValue("unreal pos", Vector3r(unrealPosition.X, unrealPosition.Y, unrealPosition.Z));
+}
+
+void PawnSimApi::addDetectionFilterMeshName(const std::string& camera_name, ImageCaptureBase::ImageType image_type, const std::string& mesh_name)
+{
+    UAirBlueprintLib::RunCommandOnGameThread([this, camera_name, image_type, mesh_name]() {
+        const APIPCamera* camera = getCamera(camera_name);
+        UDetectionComponent* detection_comp = camera->getDetectionComponent(image_type, false);
+
+        FString name = FString(mesh_name.c_str());
+
+        if (!detection_comp->object_filter_.wildcard_mesh_names_.Contains(name)) {
+            detection_comp->object_filter_.wildcard_mesh_names_.Add(name);
+        }
+    },
+                                             true);
+}
+
+void PawnSimApi::clearDetectionMeshNames(const std::string& camera_name, ImageCaptureBase::ImageType image_type)
+{
+    UAirBlueprintLib::RunCommandOnGameThread([this, camera_name, image_type]() {
+        const APIPCamera* camera = getCamera(camera_name);
+        camera->getDetectionComponent(image_type, false)->object_filter_.wildcard_mesh_names_.Empty();
+    },
+                                             true);
+}
+
+void PawnSimApi::setDetectionFilterRadius(const std::string& camera_name, ImageCaptureBase::ImageType image_type, const float radius_cm)
+{
+    UAirBlueprintLib::RunCommandOnGameThread([this, camera_name, image_type, radius_cm]() {
+        const APIPCamera* camera = getCamera(camera_name);
+        camera->getDetectionComponent(image_type, false)->max_distance_to_camera_ = radius_cm;
+    },
+                                             true);
+}
+
+std::vector<PawnSimApi::DetectionInfo> PawnSimApi::getDetections(const std::string& camera_name, ImageCaptureBase::ImageType image_type) const
+{
+    std::vector<msr::airlib::DetectionInfo> result;
+
+    UAirBlueprintLib::RunCommandOnGameThread([this, camera_name, image_type, &result]() {
+        const APIPCamera* camera = getCamera(camera_name);
+        const TArray<FDetectionInfo>& detections = camera->getDetectionComponent(image_type, false)->getDetections();
+        result.resize(detections.Num());
+
+        for (int i = 0; i < detections.Num(); i++) {
+            result[i].name = std::string(TCHAR_TO_UTF8(*(detections[i].Actor->GetFName().ToString())));
+
+            Vector3r nedWrtOrigin = ned_transform_.toGlobalNed(detections[i].Actor->GetActorLocation());
+            result[i].geo_point = msr::airlib::EarthUtils::nedToGeodetic(nedWrtOrigin,
+                                                                         AirSimSettings::singleton().origin_geopoint);
+
+            result[i].box2D.min = Vector2r(detections[i].Box2D.Min.X, detections[i].Box2D.Min.Y);
+            result[i].box2D.max = Vector2r(detections[i].Box2D.Max.X, detections[i].Box2D.Max.Y);
+
+            result[i].box3D.min = ned_transform_.toLocalNed(detections[i].Box3D.Min);
+            result[i].box3D.max = ned_transform_.toLocalNed(detections[i].Box3D.Max);
+
+            result[i].relative_pose = toPose(detections[i].RelativeTransform.GetTranslation(), detections[i].RelativeTransform.GetRotation());
+        }
+    },
+                                             true);
+
+    return result;
 }
 
 //void playBack()

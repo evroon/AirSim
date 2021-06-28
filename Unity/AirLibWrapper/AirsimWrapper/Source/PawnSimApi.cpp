@@ -59,6 +59,83 @@ void PawnSimApi::pawnTick(float dt)
     updateRendering(dt);
 }
 
+void PawnSimApi::addDetectionFilterMeshName(const std::string& camera_name, ImageCaptureBase::ImageType image_type, const std::string& mesh_name)
+{
+    unused(camera_name);
+    unused(image_type);
+    unused(mesh_name);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "addDetectionFilterMeshName is not supported on unity")
+                                    .c_str());
+}
+
+void PawnSimApi::setDetectionFilterRadius(const std::string& camera_name, ImageCaptureBase::ImageType image_type, const float radius_cm)
+{
+    unused(camera_name);
+    unused(image_type);
+    unused(radius_cm);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "setDetectionFilterRadius is not supported on unity")
+                                    .c_str());
+}
+
+void PawnSimApi::clearDetectionMeshNames(const std::string& camera_name, ImageCaptureBase::ImageType image_type)
+{
+    unused(camera_name);
+    unused(image_type);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "clearDetectionMeshNames is not supported on unity")
+                                    .c_str());
+}
+
+std::vector<PawnSimApi::DetectionInfo> PawnSimApi::getDetections(const std::string& camera_name, ImageCaptureBase::ImageType image_type) const
+{
+    unused(camera_name);
+    unused(image_type);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "getDetections is not supported on unity")
+                                    .c_str());
+
+    return std::vector<DetectionInfo>();
+}
+
+bool PawnSimApi::testLineOfSightToPoint(const msr::airlib::GeoPoint& point) const
+{
+    unused(point);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "testLineOfSightToPoint is not supported on unity")
+                                    .c_str());
+
+    return false;
+}
+
+bool PawnSimApi::testLineOfSightBetweenPoints(const msr::airlib::GeoPoint& point1, const msr::airlib::GeoPoint& point2) const
+{
+    unused(point1);
+    unused(point2);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "testLineOfSightBetweenPoints is not supported on unity")
+                                    .c_str());
+
+    return false;
+}
+
+void PawnSimApi::getWorldExtents(msr::airlib::GeoPoint& min, msr::airlib::GeoPoint& max) const
+{
+    unused(min);
+    unused(max);
+
+    throw std::invalid_argument(common_utils::Utils::stringf(
+                                    "getWorldExtents is not supported on unity")
+                                    .c_str());
+}
+
 void PawnSimApi::OnCollision(msr::airlib::CollisionInfo collisionInfo)
 {
     state_.collision_info.has_collided = collisionInfo.has_collided;
