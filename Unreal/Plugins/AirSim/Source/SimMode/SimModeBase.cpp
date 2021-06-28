@@ -888,7 +888,7 @@ std::string ASimModeBase::GetTimeFormatted()
 
 FString ASimModeBase::GetBaseDir()
 {
-    return TEXT("C:\\Users\\Daniel\\Documents\\uni\\thesis\\optical-flow-mav-detection\\data\\states\\");
+    return TEXT("E:\\tno\\optical-flow-mav-detection\\data\\states\\");
 }
 
 bool ASimModeBase::FileSaveString(FString TextToSave, FString FileName)
